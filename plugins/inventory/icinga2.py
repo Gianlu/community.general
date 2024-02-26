@@ -63,13 +63,6 @@ DOCUMENTATION = '''
         default: address
         choices: ['name', 'display_name', 'address']
         version_added: 4.2.0
-      group_by_hostgroups:
-        description:
-          - Uses Icinga2 hostgroups as groups
-        type: boolean
-        default: true
-        choices: 
-        version_added: 8.4.0      
 '''
 
 EXAMPLES = r'''
@@ -124,7 +117,6 @@ class InventoryModule(BaseInventoryPlugin, Constructable):
 
         self.cache_key = None
         self.use_cache = None
-        self.group_by_hostgroups = None
 
     def verify_file(self, path):
         valid = False
@@ -257,13 +249,10 @@ class InventoryModule(BaseInventoryPlugin, Constructable):
             else:
                 host_attrs['state'] = 'off'
             self.inventory.add_host(host_name)
-            
-            if (self.group_by_hostgroups):
-                host_groups = host_attrs.get('groups')
-                for group in host_groups:
-                    if group not in self.inventory.groups.keys():
-                        self.inventory.add_group(group)
-                    self.inventory.add_child(group, host_name)
+            for group in host_groups:
+                if group not in self.inventory.groups.keys():
+                    self.inventory.add_group(group)
+                self.inventory.add_child(group, host_name)
             # If the address attribute is populated, override ansible_host with the value
             if host_attrs.get('address') != '':
                 self.inventory.set_variable(host_name, 'ansible_host', host_attrs.get('address'))
@@ -287,13 +276,23 @@ class InventoryModule(BaseInventoryPlugin, Constructable):
         self._read_config_data(path)
 
         # Store the options from the YAML file
-        self.icinga2_url = self.get_option('url').rstrip('/') + '/v1'
+        self.icinga2_url = self.get_option('url')
         self.icinga2_user = self.get_option('user')
         self.icinga2_password = self.get_option('password')
         self.ssl_verify = self.get_option('validate_certs')
         self.host_filter = self.get_option('host_filter')
         self.inventory_attr = self.get_option('inventory_attr')
         self.group_by_hostgroups = self.get_option('group_by_hostgroups')
+
+        if self.templar.is_template(self.icinga2_url):
+            self.icinga2_url = self.templar.template(variable=self.icinga2_url, disable_lookups=False)
+        if self.templar.is_template(self.icinga2_user):
+            self.icinga2_user = self.templar.template(variable=self.icinga2_user, disable_lookups=False)
+        if self.templar.is_template(self.icinga2_password):
+            self.icinga2_password = self.templar.template(variable=self.icinga2_password, disable_lookups=False)
+
+        self.icinga2_url = self.icinga2_url.rstrip('/') + '/v1'
+
         # Not currently enabled
         # self.cache_key = self.get_cache_key(path)
         # self.use_cache = cache and self.get_option('cache')

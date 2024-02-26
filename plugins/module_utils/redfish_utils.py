@@ -20,6 +20,8 @@ from ansible.module_utils.six import text_type
 from ansible.module_utils.six.moves import http_client
 from ansible.module_utils.six.moves.urllib.error import URLError, HTTPError
 from ansible.module_utils.six.moves.urllib.parse import urlparse
+from ansible.module_utils.ansible_release import __version__ as ansible_version
+from ansible_collections.community.general.plugins.module_utils.version import LooseVersion
 
 GET_HEADERS = {'accept': 'application/json', 'OData-Version': '4.0'}
 POST_HEADERS = {'content-type': 'application/json', 'accept': 'application/json',
@@ -130,7 +132,7 @@ class RedfishUtils(object):
         return resp
 
     # The following functions are to send GET/POST/PATCH/DELETE requests
-    def get_request(self, uri, override_headers=None):
+    def get_request(self, uri, override_headers=None, allow_no_resp=False):
         req_headers = dict(GET_HEADERS)
         if override_headers:
             req_headers.update(override_headers)
@@ -145,13 +147,19 @@ class RedfishUtils(object):
                             force_basic_auth=basic_auth, validate_certs=False,
                             follow_redirects='all',
                             use_proxy=True, timeout=self.timeout)
-            if override_headers:
-                resp = gzip.open(BytesIO(resp.read()), 'rt', encoding='utf-8')
-                data = json.loads(to_native(resp.read()))
-                headers = req_headers
-            else:
-                data = json.loads(to_native(resp.read()))
-                headers = dict((k.lower(), v) for (k, v) in resp.info().items())
+            headers = dict((k.lower(), v) for (k, v) in resp.info().items())
+            try:
+                if headers.get('content-encoding') == 'gzip' and LooseVersion(ansible_version) < LooseVersion('2.14'):
+                    # Older versions of Ansible do not automatically decompress the data
+                    # Starting in 2.14, open_url will decompress the response data by default
+                    data = json.loads(to_native(gzip.open(BytesIO(resp.read()), 'rt', encoding='utf-8').read()))
+                else:
+                    data = json.loads(to_native(resp.read()))
+            except Exception as e:
+                # No response data; this is okay in certain cases
+                data = None
+                if not allow_no_resp:
+                    raise
         except HTTPError as e:
             msg = self._get_extended_message(e)
             return {'ret': False,
@@ -1813,7 +1821,7 @@ class RedfishUtils(object):
             return {'ret': False, 'msg': 'Must provide a handle tracking the update.'}
 
         # Get the task or job tracking the update
-        response = self.get_request(self.root_uri + update_handle)
+        response = self.get_request(self.root_uri + update_handle, allow_no_resp=True)
         if response['ret'] is False:
             return response
 
@@ -2907,8 +2915,7 @@ class RedfishUtils(object):
 
         # Get a list of all Chassis and build URIs, then get all PowerSupplies
         # from each Power entry in the Chassis
-        chassis_uri_list = self.chassis_uris
-        for chassis_uri in chassis_uri_list:
+        for chassis_uri in self.chassis_uris:
             response = self.get_request(self.root_uri + chassis_uri)
             if response['ret'] is False:
                 return response
@@ -3500,33 +3507,30 @@ class RedfishUtils(object):
         result = {}
         key = "Thermal"
         # Go through list
-        for chassis_uri in self.chassis_uri_list:
+        for chassis_uri in self.chassis_uris:
             response = self.get_request(self.root_uri + chassis_uri)
             if response['ret'] is False:
                 return response
             result['ret'] = True
             data = response['data']
-            oem = data.get['Oem']
-            hpe = oem.get['Hpe']
-            thermal_config = hpe.get('ThermalConfiguration')
-        result["current_thermal_config"] = thermal_config
-        return result
+            val = data.get('Oem', {}).get('Hpe', {}).get('ThermalConfiguration')
+            if val is not None:
+                return {"ret": True, "current_thermal_config": val}
+        return {"ret": False}
 
     def get_hpe_fan_percent_min(self):
         result = {}
         key = "Thermal"
         # Go through list
-        for chassis_uri in self.chassis_uri_list:
+        for chassis_uri in self.chassis_uris:
             response = self.get_request(self.root_uri + chassis_uri)
             if response['ret'] is False:
                 return response
-            result['ret'] = True
             data = response['data']
-            oem = data.get['Oem']
-            hpe = oem.get['Hpe']
-            fan_percent_min_config = hpe.get('FanPercentMinimum')
-        result["fan_percent_min"] = fan_percent_min_config
-        return result
+            val = data.get('Oem', {}).get('Hpe', {}).get('FanPercentMinimum')
+            if val is not None:
+                return {"ret": True, "fan_percent_min": val}
+        return {"ret": False}
 
     def delete_volumes(self, storage_subsystem_id, volume_ids):
         # Find the Storage resource from the requested ComputerSystem resource
